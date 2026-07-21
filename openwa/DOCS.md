@@ -21,6 +21,8 @@ incoming messages as triggers.
 | `base_topic` | `openwa` | MQTT base topic. |
 | `discovery_prefix` | `homeassistant` | MQTT discovery prefix (match your MQTT integration). |
 | `license_key` | `""` | Optional open-wa license key (not required). |
+| `chromium_args` | `--no-sandbox,--disable-dev-shm-usage` | Comma-separated Chromium flags. Keep minimal — extra flags can break WhatsApp multi-device. |
+| `create_retries` | `3` | Retries if WhatsApp Web is slow to load (common on ARM/Pi). |
 | `log_level` | `info` | Add-on log level. |
 
 ## First run — link your phone

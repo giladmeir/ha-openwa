@@ -16,7 +16,14 @@ const {
   MQTT_PASS = '',
   MQTT_SSL = 'false',
   CHROME_BIN = '/usr/bin/chromium-browser',
+  CHROMIUM_ARGS = '--no-sandbox,--disable-dev-shm-usage',
+  CREATE_RETRIES = '3',
 } = process.env;
+
+const chromiumArgs = CHROMIUM_ARGS.split(',')
+  .map((a) => a.trim())
+  .filter(Boolean);
+const maxAttempts = Math.max(1, parseInt(CREATE_RETRIES, 10) + 1 || 1);
 
 const TOPIC = {
   status: `${BASE_TOPIC}/status`,
@@ -25,6 +32,7 @@ const TOPIC = {
 };
 
 const log = (...args) => console.log(new Date().toISOString(), ...args);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let waClient = null;
 
@@ -159,6 +167,43 @@ function wireWhatsapp(client, mqttClient) {
   });
 }
 
+function createClient() {
+  return create({
+    sessionId: SESSION_ID,
+    sessionDataPath: DATA_PATH,
+    multiDevice: true,
+    headless: true,
+    qrTimeout: 0,
+    authTimeout: 60,
+    autoRefresh: true,
+    cacheEnabled: false,
+    useChrome: false,
+    executablePath: CHROME_BIN,
+    disableSpins: true,
+    logConsole: false,
+    popup: false,
+    killProcessOnBrowserClose: true,
+    skipBrokenMethodsCheck: true,
+    blockCrashLogs: true,
+    licenseKey: LICENSE_KEY || undefined,
+    chromiumArgs,
+  });
+}
+
+// Retry launch: on ARM the WhatsApp Web store can be slow to ripen and time out.
+async function launchWhatsapp() {
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      log(`Launching WhatsApp (open-wa), attempt ${attempt}/${maxAttempts}...`);
+      return await createClient();
+    } catch (err) {
+      log(`Launch attempt ${attempt} failed:`, err.message);
+      if (attempt < maxAttempts) await sleep(5000);
+    }
+  }
+  throw new Error('WhatsApp failed to launch after all retries');
+}
+
 async function main() {
   if (!MQTT_HOST) {
     log('Fatal: MQTT_HOST not set');
@@ -171,30 +216,7 @@ async function main() {
     log('>>> QR code ready. Scan it from these logs: WhatsApp > Linked Devices > Link a Device.'),
   );
 
-  log('Launching WhatsApp (open-wa)...');
-  waClient = await create({
-    sessionId: SESSION_ID,
-    sessionDataPath: DATA_PATH,
-    multiDevice: true,
-    headless: true,
-    qrTimeout: 0,
-    authTimeout: 0,
-    autoRefresh: true,
-    cacheEnabled: false,
-    useChrome: false,
-    executablePath: CHROME_BIN,
-    disableSpins: true,
-    logConsole: false,
-    popup: false,
-    licenseKey: LICENSE_KEY || undefined,
-    chromiumArgs: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-gpu',
-    ],
-  });
-
+  waClient = await launchWhatsapp();
   wireWhatsapp(waClient, mqttClient);
   mqttClient.publish(TOPIC.status, 'online', { retain: true, qos: 1 });
   log('WhatsApp connected. Bridge is ready.');

@@ -6,6 +6,8 @@ export SESSION_ID="$(bashio::config 'session_id')"
 export BASE_TOPIC="$(bashio::config 'base_topic')"
 export DISCOVERY_PREFIX="$(bashio::config 'discovery_prefix')"
 export LICENSE_KEY="$(bashio::config 'license_key')"
+export CHROMIUM_ARGS="$(bashio::config 'chromium_args')"
+export CREATE_RETRIES="$(bashio::config 'create_retries')"
 export DATA_PATH="/data"
 
 if bashio::services.available 'mqtt'; then
