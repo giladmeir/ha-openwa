@@ -1,5 +1,5 @@
 name: WhatsApp Bridge
-version: "0.2.1"
+version: "0.3.0"
 slug: openwa
 description: Connect Home Assistant to WhatsApp via whatsapp-web.js, bridged over MQTT (send + receive)
 url: https://github.com/giladmeir/ha-openwa/tree/main/openwa
@@ -9,13 +9,17 @@ arch:
 startup: application
 boot: auto
 init: false
-watchdog: "http://[HOST]:[PORT:8090]/health"
+ingress: true
+ingress_port: 8099
+panel_icon: mdi:whatsapp
+panel_title: WhatsApp
+watchdog: "http://[HOST]:[PORT:8099]/health"
 services:
   - mqtt:need
 ports:
-  8090/tcp: null
+  8099/tcp: null
 ports_description:
-  8090/tcp: Internal health endpoint (used by the add-on watchdog)
+  8099/tcp: Web UI + health endpoint (QR scanning, add-on watchdog)
 options:
   session_id: ha
   base_topic: openwa

@@ -29,9 +29,13 @@ incoming messages as triggers.
 
 ## First run — link your phone
 
-1. Start the add-on and open its **Log** tab.
-2. A QR code is printed in the log. On your phone: **WhatsApp → Settings → Linked Devices → Link a Device**, then scan it.
-3. The session is saved to `/data`, so you only scan once (survives restarts/updates).
+1. Start the add-on, then click **Open Web UI** (or the **WhatsApp** item in the sidebar).
+2. A QR code is shown on that page. On your phone: **WhatsApp → Settings → Linked Devices → Link a Device**, then scan it.
+3. The page refreshes the code automatically and shows **✅ Connected** once linked.
+4. The session is saved to `/data`, so you only scan once (survives restarts/updates).
+
+> The QR is shown in the Web UI (not spammed into the logs), so the add-on stays quiet and
+> doesn't flood the Supervisor log stream.
 
 The add-on auto-creates two entities via MQTT discovery:
 

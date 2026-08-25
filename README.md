@@ -8,7 +8,7 @@ Send WhatsApp messages from HA and receive incoming messages as automation trigg
 
 1. In Home Assistant: **Settings → Add-ons → Add-on Store → ⋮ → Repositories**.
 2. Add: `https://github.com/giladmeir/ha-openwa`
-3. Install **WhatsApp Bridge**, then start it and scan the QR code from its **Log** tab.
+3. Install **WhatsApp Bridge**, then start it and click **Open Web UI** to scan the QR code.
 
 Requires the **Mosquitto broker** add-on and the **MQTT** integration.
 

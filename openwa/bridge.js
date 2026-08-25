@@ -2,7 +2,7 @@
 
 const http = require('http');
 const mqtt = require('mqtt');
-const qrcode = require('qrcode-terminal');
+const QRCode = require('qrcode');
 const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 
 const {
@@ -20,6 +20,7 @@ const {
   USER_AGENT = '',
   WEB_VERSION = '',
   PROTOCOL_TIMEOUT = '120000',
+  WEB_PORT = '8099',
 } = process.env;
 
 const chromiumArgs = CHROMIUM_ARGS.split(',')
@@ -38,14 +39,67 @@ let waClient = null;
 let waReady = false;
 let mqttClient = null;
 
-// --- Health endpoint (watchdog): 200 while the process is alive ---
-function startHealthServer() {
+// UI state, surfaced through the ingress web page (no noisy QR logs).
+const ui = { status: 'starting', qr: null, qrAt: 0, updatedAt: Date.now() };
+function setUi(patch) {
+  Object.assign(ui, patch, { updatedAt: Date.now() });
+}
+
+function renderPage() {
+  const connected = ui.status === 'connected';
+  const body = connected
+    ? `<div class="ok">✅ Connected to WhatsApp</div>
+       <p>The bridge is linked and ready. You can close this page.</p>`
+    : ui.qr
+      ? `<p>Scan this QR in <b>WhatsApp → Settings → Linked Devices → Link a Device</b>:</p>
+         <img class="qr" src="qr.png?ts=${ui.qrAt}" alt="WhatsApp QR code" />
+         <p class="muted">The code refreshes automatically. This page reloads every few seconds.</p>`
+      : `<p class="muted">Starting WhatsApp… waiting for a QR code. This page reloads automatically.</p>`;
+  return `<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="5">
+<title>WhatsApp Bridge</title>
+<style>
+  body{font-family:system-ui,sans-serif;margin:0;padding:24px;text-align:center;background:#f6f8fa;color:#1f2328}
+  .card{max-width:420px;margin:0 auto;background:#fff;border:1px solid #d0d7de;border-radius:12px;padding:24px}
+  h1{font-size:18px;margin:0 0 16px}
+  .qr{width:280px;height:280px;image-rendering:pixelated;border:1px solid #d0d7de;border-radius:8px}
+  .ok{font-size:20px;color:#1a7f37;margin-bottom:8px}
+  .muted{color:#656d76;font-size:13px}
+  .status{font-size:12px;color:#656d76;margin-top:16px}
+</style></head>
+<body><div class="card"><h1>WhatsApp Bridge</h1>${body}
+<div class="status">status: ${ui.status}</div></div></body></html>`;
+}
+
+// Serves the ingress QR/status page, a PNG of the current QR, and a watchdog health check.
+function startWebServer() {
+  const port = parseInt(WEB_PORT, 10) || 8099;
   http
-    .createServer((_req, res) => {
-      res.writeHead(200, { 'Content-Type': 'text/plain' });
-      res.end('ok');
+    .createServer(async (req, res) => {
+      const path = (req.url || '/').split('?')[0];
+      if (path === '/health') {
+        res.writeHead(200, { 'Content-Type': 'text/plain' });
+        return res.end('ok');
+      }
+      if (path.endsWith('/qr.png')) {
+        if (!ui.qr) {
+          res.writeHead(404);
+          return res.end();
+        }
+        try {
+          const png = await QRCode.toBuffer(ui.qr, { width: 280, margin: 1 });
+          res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'no-store' });
+          return res.end(png);
+        } catch {
+          res.writeHead(500);
+          return res.end();
+        }
+      }
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+      res.end(renderPage());
     })
-    .listen(8090, () => log('Health endpoint listening on :8090'));
+    .listen(port, () => log(`Web UI + health listening on :${port}`));
 }
 
 // --- MQTT ---
@@ -196,18 +250,23 @@ function buildClient() {
 
 function wireEvents(client) {
   client.on('qr', (qr) => {
-    log('>>> Scan this QR with WhatsApp > Linked Devices > Link a Device:');
-    qrcode.generate(qr, { small: true });
+    setUi({ status: 'qr', qr, qrAt: Date.now() });
+    log('QR code ready — open the add-on Web UI (Open Web UI) to scan it.');
   });
   client.on('loading_screen', (percent, message) => log(`Loading WhatsApp: ${percent}% ${message || ''}`));
   client.on('authenticated', () => log('WhatsApp authenticated; session saved.'));
-  client.on('auth_failure', (m) => log('Auth failure:', m));
+  client.on('auth_failure', (m) => {
+    setUi({ status: 'auth_failure' });
+    log('Auth failure:', m);
+  });
   client.on('ready', () => {
     log('WhatsApp connected. Bridge is ready.');
+    setUi({ status: 'connected', qr: null });
     publishStatus(true);
   });
   client.on('disconnected', (reason) => {
     log('WhatsApp disconnected:', reason);
+    setUi({ status: 'disconnected', qr: null });
     publishStatus(false);
   });
   client.on('message', handleIncoming);
@@ -218,7 +277,7 @@ async function main() {
     log('Fatal: MQTT_HOST not set');
     process.exit(1);
   }
-  startHealthServer();
+  startWebServer();
   mqttClient = connectMqtt();
 
   log('Launching WhatsApp (whatsapp-web.js)...');
