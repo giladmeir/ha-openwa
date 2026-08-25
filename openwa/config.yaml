@@ -1,7 +1,7 @@
-name: WhatsApp Bridge (open-wa)
-version: "0.1.2"
+name: WhatsApp Bridge
+version: "0.2.0"
 slug: openwa
-description: Connect Home Assistant to WhatsApp via open-wa, bridged over MQTT (send + receive)
+description: Connect Home Assistant to WhatsApp via whatsapp-web.js, bridged over MQTT (send + receive)
 url: https://github.com/giladmeir/ha-openwa/tree/main/openwa
 arch:
   - aarch64
@@ -20,17 +20,17 @@ options:
   session_id: ha
   base_topic: openwa
   discovery_prefix: homeassistant
-  license_key: ""
-  user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
-  chromium_args: ""
+  user_agent: ""
+  chromium_args: "--no-sandbox,--disable-dev-shm-usage"
+  web_version: ""
   create_retries: 3
   log_level: info
 schema:
   session_id: str
   base_topic: str
   discovery_prefix: str
-  license_key: str?
   user_agent: str?
   chromium_args: str?
+  web_version: str?
   create_retries: int(0,10)
   log_level: list(trace|debug|info|notice|warning|error|fatal)

@@ -5,9 +5,9 @@ set -e
 export SESSION_ID="$(bashio::config 'session_id')"
 export BASE_TOPIC="$(bashio::config 'base_topic')"
 export DISCOVERY_PREFIX="$(bashio::config 'discovery_prefix')"
-export LICENSE_KEY="$(bashio::config 'license_key')"
 export USER_AGENT="$(bashio::config 'user_agent')"
 export CHROMIUM_ARGS="$(bashio::config 'chromium_args')"
+export WEB_VERSION="$(bashio::config 'web_version')"
 export CREATE_RETRIES="$(bashio::config 'create_retries')"
 export DATA_PATH="/data"
 
@@ -23,7 +23,7 @@ else
     bashio::exit.nok
 fi
 
-bashio::log.info "Starting open-wa WhatsApp bridge (session: ${SESSION_ID})."
+bashio::log.info "Starting WhatsApp bridge (whatsapp-web.js, session: ${SESSION_ID})."
 bashio::log.info "On first run, scan the QR code shown in these logs: WhatsApp > Settings > Linked Devices."
 
 exec node /opt/openwa/bridge.js

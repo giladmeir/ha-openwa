@@ -8,7 +8,8 @@ ENV LANG=C.UTF-8 \
     PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser \
     CHROME_BIN=/usr/bin/chromium-browser
 
-# Node.js runtime + system Chromium (puppeteer's bundled build has no aarch64 binary)
+# Node.js runtime + system Chromium (puppeteer's bundled build has no aarch64 binary,
+# so whatsapp-web.js is pointed at the system Chromium via PUPPETEER_EXECUTABLE_PATH)
 RUN apk add --no-cache \
         nodejs \
         npm \

@@ -2,13 +2,13 @@
 
 const http = require('http');
 const mqtt = require('mqtt');
-const { create, ev } = require('@open-wa/wa-automate');
+const qrcode = require('qrcode-terminal');
+const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 
 const {
   SESSION_ID = 'ha',
   BASE_TOPIC = 'openwa',
   DISCOVERY_PREFIX = 'homeassistant',
-  LICENSE_KEY = '',
   DATA_PATH = '/data',
   MQTT_HOST,
   MQTT_PORT = '1883',
@@ -16,15 +16,14 @@ const {
   MQTT_PASS = '',
   MQTT_SSL = 'false',
   CHROME_BIN = '/usr/bin/chromium-browser',
-  CHROMIUM_ARGS = '',
+  CHROMIUM_ARGS = '--no-sandbox,--disable-dev-shm-usage',
   USER_AGENT = '',
-  CREATE_RETRIES = '3',
+  WEB_VERSION = '',
 } = process.env;
 
 const chromiumArgs = CHROMIUM_ARGS.split(',')
   .map((a) => a.trim())
   .filter(Boolean);
-const maxAttempts = Math.max(1, parseInt(CREATE_RETRIES, 10) + 1 || 1);
 
 const TOPIC = {
   status: `${BASE_TOPIC}/status`,
@@ -33,9 +32,10 @@ const TOPIC = {
 };
 
 const log = (...args) => console.log(new Date().toISOString(), ...args);
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let waClient = null;
+let waReady = false;
+let mqttClient = null;
 
 // --- Health endpoint (watchdog): 200 while the process is alive ---
 function startHealthServer() {
@@ -62,7 +62,7 @@ function connectMqtt() {
     log('MQTT connected to', url);
     client.subscribe(TOPIC.send, { qos: 1 });
     publishDiscovery(client);
-    client.publish(TOPIC.status, waClient ? 'online' : 'offline', { retain: true, qos: 1 });
+    client.publish(TOPIC.status, waReady ? 'online' : 'offline', { retain: true, qos: 1 });
   });
   client.on('message', (topic, payload) => {
     if (topic === TOPIC.send) handleSendRequest(payload);
@@ -71,13 +71,18 @@ function connectMqtt() {
   return client;
 }
 
+function publishStatus(online) {
+  waReady = online;
+  if (mqttClient) mqttClient.publish(TOPIC.status, online ? 'online' : 'offline', { retain: true, qos: 1 });
+}
+
 // Auto-create HA entities via MQTT discovery.
 function publishDiscovery(client) {
   const device = {
     identifiers: [`openwa_${SESSION_ID}`],
     name: 'WhatsApp Bridge',
-    manufacturer: 'open-wa',
-    model: 'wa-automate',
+    manufacturer: 'whatsapp-web.js',
+    model: 'HA WhatsApp Bridge',
   };
   const opts = { retain: true, qos: 1 };
 
@@ -123,7 +128,7 @@ function toChatId(to) {
 
 // HA -> WhatsApp. Payload: {"to": "...", "message": "..."} or {"to","image","caption","filename"}.
 async function handleSendRequest(payload) {
-  if (!waClient) return log('Send dropped: WhatsApp not ready yet');
+  if (!waClient || !waReady) return log('Send dropped: WhatsApp not ready yet');
   let data;
   try {
     data = JSON.parse(payload.toString());
@@ -134,9 +139,12 @@ async function handleSendRequest(payload) {
   if (!chatId) return log('Send dropped: missing/invalid "to"');
   try {
     if (data.image) {
-      await waClient.sendImage(chatId, data.image, data.filename || 'image.jpg', data.caption || '');
+      const media = /^https?:\/\//i.test(data.image)
+        ? await MessageMedia.fromUrl(data.image, { unsafeMime: true })
+        : new MessageMedia(data.mimetype || 'image/jpeg', data.image, data.filename || 'image.jpg');
+      await waClient.sendMessage(chatId, media, { caption: data.caption || '' });
     } else {
-      await waClient.sendText(chatId, String(data.message ?? ''));
+      await waClient.sendMessage(chatId, String(data.message ?? ''));
     }
     log('Sent message to', chatId);
   } catch (err) {
@@ -145,65 +153,62 @@ async function handleSendRequest(payload) {
 }
 
 // WhatsApp -> HA.
-function wireWhatsapp(client, mqttClient) {
-  client.onMessage((m) => {
-    const out = {
-      from: m.from,
-      chatId: m.chatId,
-      sender: (m.sender && (m.sender.pushname || m.sender.formattedName)) || m.notifyName || '',
-      body: m.body || m.caption || '',
-      type: m.type,
-      isGroup: m.isGroupMsg === true,
-      timestamp: m.timestamp,
-      id: m.id,
-    };
-    mqttClient.publish(TOPIC.message, JSON.stringify(out), { qos: 1 });
-  });
+function handleIncoming(msg) {
+  const isGroup = typeof msg.from === 'string' && msg.from.endsWith('@g.us');
+  const out = {
+    from: msg.from,
+    to: msg.to,
+    chatId: msg.from,
+    sender: (msg._data && msg._data.notifyName) || msg.author || msg.from,
+    author: msg.author || null,
+    body: msg.body || '',
+    type: msg.type,
+    isGroup,
+    timestamp: msg.timestamp,
+    id: msg.id && msg.id._serialized,
+  };
+  if (mqttClient) mqttClient.publish(TOPIC.message, JSON.stringify(out), { qos: 1 });
+}
 
-  client.onStateChanged((state) => {
-    log('WhatsApp state:', state);
-    const online = state === 'CONNECTED';
-    mqttClient.publish(TOPIC.status, online ? 'online' : 'offline', { retain: true, qos: 1 });
-    if (['CONFLICT', 'UNLAUNCHED', 'UNPAIRED'].includes(state)) client.forceRefocus();
+function buildClient() {
+  const webVersionCache = WEB_VERSION
+    ? {
+        type: 'remote',
+        remotePath: `https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/${WEB_VERSION}.html`,
+      }
+    : undefined;
+
+  return new Client({
+    authStrategy: new LocalAuth({ clientId: SESSION_ID, dataPath: DATA_PATH }),
+    puppeteer: {
+      headless: true,
+      executablePath: CHROME_BIN,
+      args: chromiumArgs,
+    },
+    userAgent: USER_AGENT || undefined,
+    webVersionCache,
+    takeoverOnConflict: true,
+    qrMaxRetries: 0,
   });
 }
 
-function createClient() {
-  return create({
-    sessionId: SESSION_ID,
-    sessionDataPath: DATA_PATH,
-    multiDevice: true,
-    headless: 'new',
-    qrTimeout: 0,
-    authTimeout: 60,
-    autoRefresh: true,
-    cacheEnabled: false,
-    useChrome: false,
-    executablePath: CHROME_BIN,
-    customUserAgent: USER_AGENT || undefined,
-    disableSpins: true,
-    logConsole: false,
-    popup: false,
-    killProcessOnBrowserClose: true,
-    skipBrokenMethodsCheck: true,
-    blockCrashLogs: true,
-    licenseKey: LICENSE_KEY || undefined,
-    chromiumArgs,
+function wireEvents(client) {
+  client.on('qr', (qr) => {
+    log('>>> Scan this QR with WhatsApp > Linked Devices > Link a Device:');
+    qrcode.generate(qr, { small: true });
   });
-}
-
-// Retry launch: on ARM the WhatsApp Web store can be slow to ripen and time out.
-async function launchWhatsapp() {
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    try {
-      log(`Launching WhatsApp (open-wa), attempt ${attempt}/${maxAttempts}...`);
-      return await createClient();
-    } catch (err) {
-      log(`Launch attempt ${attempt} failed:`, err.message);
-      if (attempt < maxAttempts) await sleep(5000);
-    }
-  }
-  throw new Error('WhatsApp failed to launch after all retries');
+  client.on('loading_screen', (percent, message) => log(`Loading WhatsApp: ${percent}% ${message || ''}`));
+  client.on('authenticated', () => log('WhatsApp authenticated; session saved.'));
+  client.on('auth_failure', (m) => log('Auth failure:', m));
+  client.on('ready', () => {
+    log('WhatsApp connected. Bridge is ready.');
+    publishStatus(true);
+  });
+  client.on('disconnected', (reason) => {
+    log('WhatsApp disconnected:', reason);
+    publishStatus(false);
+  });
+  client.on('message', handleIncoming);
 }
 
 async function main() {
@@ -212,16 +217,12 @@ async function main() {
     process.exit(1);
   }
   startHealthServer();
-  const mqttClient = connectMqtt();
+  mqttClient = connectMqtt();
 
-  ev.on('qr.**', () =>
-    log('>>> QR code ready. Scan it from these logs: WhatsApp > Linked Devices > Link a Device.'),
-  );
-
-  waClient = await launchWhatsapp();
-  wireWhatsapp(waClient, mqttClient);
-  mqttClient.publish(TOPIC.status, 'online', { retain: true, qos: 1 });
-  log('WhatsApp connected. Bridge is ready.');
+  log('Launching WhatsApp (whatsapp-web.js)...');
+  waClient = buildClient();
+  wireEvents(waClient);
+  await waClient.initialize();
 }
 
 main().catch((err) => {

@@ -1,6 +1,6 @@
-# WhatsApp Bridge (open-wa)
+# WhatsApp Bridge (whatsapp-web.js)
 
-Connects Home Assistant to WhatsApp using [`@open-wa/wa-automate`](https://github.com/open-wa/wa-automate-nodejs)
+Connects Home Assistant to WhatsApp using [`whatsapp-web.js`](https://github.com/pedroslopez/whatsapp-web.js)
 and bridges everything over MQTT. Lets you **send** WhatsApp messages from HA and **receive**
 incoming messages as triggers.
 
@@ -20,10 +20,10 @@ incoming messages as triggers.
 | `session_id` | `ha` | Session name; the WhatsApp login is persisted under `/data`. |
 | `base_topic` | `openwa` | MQTT base topic. |
 | `discovery_prefix` | `homeassistant` | MQTT discovery prefix (match your MQTT integration). |
-| `license_key` | `""` | Optional open-wa license key (not required). |
-| `user_agent` | modern Chrome UA | Browser user-agent for WhatsApp Web. The library default is too old and is rejected; override only if needed. |
-| `chromium_args` | `""` | Comma-separated extra Chromium flags. Leave empty — open-wa already adds `--no-sandbox`/`--disable-dev-shm-usage`, and extra flags can break multi-device. |
-| `create_retries` | `3` | Retries if WhatsApp Web is slow to load (common on ARM/Pi). |
+| `user_agent` | `""` | Optional browser user-agent override. Leave empty to use the library default. |
+| `chromium_args` | `--no-sandbox,--disable-dev-shm-usage` | Comma-separated Chromium flags. `--no-sandbox` is required to run headless Chromium as root in the container. |
+| `web_version` | `""` | Optional WhatsApp Web version to pin (e.g. `2.3000.1023204347-alpha`) from the wa-version cache, if the live version ever breaks. Empty = use live. |
+| `create_retries` | `3` | Reserved for launch retries. |
 | `log_level` | `info` | Add-on log level. |
 
 ## First run — link your phone
