@@ -19,6 +19,7 @@ const {
   CHROMIUM_ARGS = '--no-sandbox,--disable-dev-shm-usage',
   USER_AGENT = '',
   WEB_VERSION = '',
+  PROTOCOL_TIMEOUT = '120000',
 } = process.env;
 
 const chromiumArgs = CHROMIUM_ARGS.split(',')
@@ -184,6 +185,7 @@ function buildClient() {
       headless: true,
       executablePath: CHROME_BIN,
       args: chromiumArgs,
+      protocolTimeout: parseInt(PROTOCOL_TIMEOUT, 10) || 120000,
     },
     userAgent: USER_AGENT || undefined,
     webVersionCache,

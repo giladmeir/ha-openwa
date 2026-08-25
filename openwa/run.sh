@@ -8,6 +8,7 @@ export DISCOVERY_PREFIX="$(bashio::config 'discovery_prefix')"
 export USER_AGENT="$(bashio::config 'user_agent')"
 export CHROMIUM_ARGS="$(bashio::config 'chromium_args')"
 export WEB_VERSION="$(bashio::config 'web_version')"
+export PROTOCOL_TIMEOUT="$(bashio::config 'protocol_timeout')"
 export CREATE_RETRIES="$(bashio::config 'create_retries')"
 export DATA_PATH="/data"
 
