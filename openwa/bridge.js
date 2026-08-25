@@ -21,6 +21,7 @@ const {
   WEB_VERSION = '',
   PROTOCOL_TIMEOUT = '120000',
   WEB_PORT = '8099',
+  SELF_COMMAND_PREFIX = '',
 } = process.env;
 
 const chromiumArgs = CHROMIUM_ARGS.split(',')
@@ -38,6 +39,8 @@ const log = (...args) => console.log(new Date().toISOString(), ...args);
 let waClient = null;
 let waReady = false;
 let mqttClient = null;
+let ownId = null;
+const selfPrefix = SELF_COMMAND_PREFIX.trim().toLowerCase();
 
 // UI state, surfaced through the ingress web page (no noisy QR logs).
 const ui = { status: 'starting', qr: null, qrAt: 0, updatedAt: Date.now() };
@@ -46,18 +49,8 @@ function setUi(patch) {
 }
 
 function renderPage() {
-  const connected = ui.status === 'connected';
-  const body = connected
-    ? `<div class="ok">✅ Connected to WhatsApp</div>
-       <p>The bridge is linked and ready. You can close this page.</p>`
-    : ui.qr
-      ? `<p>Scan this QR in <b>WhatsApp → Settings → Linked Devices → Link a Device</b>:</p>
-         <img class="qr" src="qr.png?ts=${ui.qrAt}" alt="WhatsApp QR code" />
-         <p class="muted">The code refreshes automatically. This page reloads every few seconds.</p>`
-      : `<p class="muted">Starting WhatsApp… waiting for a QR code. This page reloads automatically.</p>`;
   return `<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="refresh" content="5">
 <title>WhatsApp Bridge</title>
 <style>
   body{font-family:system-ui,sans-serif;margin:0;padding:24px;text-align:center;background:#f6f8fa;color:#1f2328}
@@ -68,8 +61,38 @@ function renderPage() {
   .muted{color:#656d76;font-size:13px}
   .status{font-size:12px;color:#656d76;margin-top:16px}
 </style></head>
-<body><div class="card"><h1>WhatsApp Bridge</h1>${body}
-<div class="status">status: ${ui.status}</div></div></body></html>`;
+<body><div class="card"><h1>WhatsApp Bridge</h1>
+<div id="content"><p class="muted">Loading…</p></div>
+<div class="status">status: <span id="st">…</span></div></div>
+<script>
+// Poll a tiny status endpoint (no full-page reloads). Stop once connected.
+var lastQrAt = 0, timer = null;
+function render(s) {
+  document.getElementById('st').textContent = s.status;
+  var c = document.getElementById('content');
+  if (s.status === 'connected') {
+    c.innerHTML = '<div class="ok">✅ Connected to WhatsApp</div><p>The bridge is linked and ready. You can close this page.</p>';
+    if (timer) { clearInterval(timer); timer = null; }
+    return;
+  }
+  if (s.hasQr) {
+    if (s.qrAt !== lastQrAt) {
+      lastQrAt = s.qrAt;
+      c.innerHTML = '<p>Scan this QR in <b>WhatsApp → Settings → Linked Devices → Link a Device</b>:</p>'
+        + '<img class="qr" src="qr.png?ts=' + s.qrAt + '" alt="WhatsApp QR code" />'
+        + '<p class="muted">The code refreshes automatically.</p>';
+    }
+  } else {
+    c.innerHTML = '<p class="muted">Starting WhatsApp… waiting for a QR code.</p>';
+  }
+}
+function poll() {
+  fetch('status', { cache: 'no-store' }).then(function(r){ return r.json(); }).then(render).catch(function(){});
+}
+poll();
+timer = setInterval(poll, 4000);
+</script>
+</body></html>`;
 }
 
 // Serves the ingress QR/status page, a PNG of the current QR, and a watchdog health check.
@@ -81,6 +104,10 @@ function startWebServer() {
       if (path === '/health') {
         res.writeHead(200, { 'Content-Type': 'text/plain' });
         return res.end('ok');
+      }
+      if (path.endsWith('/status')) {
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        return res.end(JSON.stringify({ status: ui.status, hasQr: !!ui.qr, qrAt: ui.qrAt }));
       }
       if (path.endsWith('/qr.png')) {
         if (!ui.qr) {
@@ -207,22 +234,38 @@ async function handleSendRequest(payload) {
   }
 }
 
-// WhatsApp -> HA.
-function handleIncoming(msg) {
+// WhatsApp -> HA. Shared publisher for both received and (opt-in) self-sent messages.
+function publishIncoming(msg, fromMe) {
   const isGroup = typeof msg.from === 'string' && msg.from.endsWith('@g.us');
+  const author = fromMe ? ownId || msg.to : msg.author || null;
   const out = {
     from: msg.from,
     to: msg.to,
     chatId: msg.from,
-    sender: (msg._data && msg._data.notifyName) || msg.author || msg.from,
-    author: msg.author || null,
+    sender: (msg._data && msg._data.notifyName) || author || msg.from,
+    author,
     body: msg.body || '',
     type: msg.type,
     isGroup,
+    fromMe: !!fromMe,
     timestamp: msg.timestamp,
     id: msg.id && msg.id._serialized,
   };
   if (mqttClient) mqttClient.publish(TOPIC.message, JSON.stringify(out), { qos: 1 });
+}
+
+function handleIncoming(msg) {
+  publishIncoming(msg, false);
+}
+
+// Messages sent BY the linked account (e.g. the owner typing in the family group, or
+// "message yourself"). Only forwarded when SELF_COMMAND_PREFIX is set and matched, to
+// avoid leaking normal chat activity and to prevent reply loops.
+function handleSelfMessage(msg) {
+  if (!selfPrefix || !msg.fromMe) return;
+  const body = (msg.body || '').trim().toLowerCase();
+  if (!body.startsWith(selfPrefix)) return;
+  publishIncoming(msg, true);
 }
 
 function buildClient() {
@@ -261,6 +304,10 @@ function wireEvents(client) {
   });
   client.on('ready', () => {
     log('WhatsApp connected. Bridge is ready.');
+    try {
+      ownId = client.info && client.info.wid && client.info.wid._serialized;
+      if (ownId) log('Linked account:', ownId);
+    } catch { /* ignore */ }
     setUi({ status: 'connected', qr: null });
     publishStatus(true);
   });
@@ -270,6 +317,7 @@ function wireEvents(client) {
     publishStatus(false);
   });
   client.on('message', handleIncoming);
+  if (selfPrefix) client.on('message_create', handleSelfMessage);
 }
 
 async function main() {

@@ -23,6 +23,7 @@ incoming messages as triggers.
 | `user_agent` | `""` | Optional browser user-agent override. Leave empty to use the library default. |
 | `chromium_args` | `--no-sandbox,--disable-dev-shm-usage` | Comma-separated Chromium flags. `--no-sandbox` is required to run headless Chromium as root in the container. |
 | `web_version` | `""` | Optional WhatsApp Web version to pin (e.g. `2.3000.1023204347-alpha`) from the wa-version cache, if the live version ever breaks. Empty = use live. |
+| `self_command_prefix` | `""` | If set, messages **sent by the linked account** (e.g. the owner typing in a family group, or "message yourself") that start with this word are also forwarded to HA. Enables controlling HA from the same phone. Empty = only forward messages received from others. |
 | `protocol_timeout` | `120000` | Puppeteer CDP timeout (ms). Raise if Chromium is slow to respond and you see `Network.enable timed out`. |
 | `create_retries` | `3` | Reserved for launch retries. |
 | `log_level` | `info` | Add-on log level. |
