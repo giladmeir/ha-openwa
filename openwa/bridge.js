@@ -22,6 +22,7 @@ const {
   PROTOCOL_TIMEOUT = '120000',
   WEB_PORT = '8099',
   SELF_COMMAND_PREFIX = '',
+  SELF_POLL_SECONDS = '4',
 } = process.env;
 
 const chromiumArgs = CHROMIUM_ARGS.split(',')
@@ -41,6 +42,10 @@ let waReady = false;
 let mqttClient = null;
 let ownId = null;
 const selfPrefix = SELF_COMMAND_PREFIX.trim().toLowerCase();
+const selfPollSeconds = Number.isFinite(parseInt(SELF_POLL_SECONDS, 10)) ? parseInt(SELF_POLL_SECONDS, 10) : 4;
+const processedIds = new Set();
+let lastPollTs = 0;
+let pollerStarted = false;
 
 // UI state, surfaced through the ingress web page (no noisy QR logs).
 const ui = { status: 'starting', qr: null, qrAt: 0, updatedAt: Date.now() };
@@ -235,7 +240,14 @@ async function handleSendRequest(payload) {
 }
 
 // WhatsApp -> HA. Shared publisher for both received and (opt-in) self-sent messages.
+// Deduplicates by message id so the event and polling paths never double-publish.
 function publishIncoming(msg, fromMe) {
+  const id = msg.id && msg.id._serialized;
+  if (id) {
+    if (processedIds.has(id)) return;
+    processedIds.add(id);
+    if (processedIds.size > 1000) processedIds.clear();
+  }
   const isGroup = typeof msg.from === 'string' && msg.from.endsWith('@g.us');
   const author = fromMe ? ownId || msg.to : msg.author || null;
   const out = {
@@ -249,7 +261,7 @@ function publishIncoming(msg, fromMe) {
     isGroup,
     fromMe: !!fromMe,
     timestamp: msg.timestamp,
-    id: msg.id && msg.id._serialized,
+    id,
   };
   if (mqttClient) mqttClient.publish(TOPIC.message, JSON.stringify(out), { qos: 1 });
 }
@@ -266,6 +278,33 @@ function handleSelfMessage(msg) {
   const body = (msg.body || '').trim().toLowerCase();
   if (!body.startsWith(selfPrefix)) return;
   publishIncoming(msg, true);
+}
+
+// WhatsApp multi-device does not reliably fire events for messages sent from the linked
+// phone, so we also poll each chat's last message for owner commands (deduped by id).
+function startSelfPoller(client) {
+  if (pollerStarted || !selfPrefix || !(selfPollSeconds > 0)) return;
+  pollerStarted = true;
+  lastPollTs = Math.floor(Date.now() / 1000);
+  setInterval(async () => {
+    if (!waReady) return;
+    try {
+      const chats = await client.getChats();
+      const now = Math.floor(Date.now() / 1000);
+      for (const chat of chats) {
+        const m = chat.lastMessage;
+        if (!m || !m.fromMe) continue;
+        if ((m.timestamp || 0) < lastPollTs) continue;
+        const body = (m.body || '').trim().toLowerCase();
+        if (!body.startsWith(selfPrefix)) continue;
+        publishIncoming(m, true);
+      }
+      lastPollTs = now;
+    } catch (err) {
+      log('Self-poll error:', err.message);
+    }
+  }, selfPollSeconds * 1000);
+  log(`Self-message polling every ${selfPollSeconds}s (prefix "${selfPrefix}")`);
 }
 
 function buildClient() {
@@ -310,6 +349,7 @@ function wireEvents(client) {
     } catch { /* ignore */ }
     setUi({ status: 'connected', qr: null });
     publishStatus(true);
+    startSelfPoller(client);
   });
   client.on('disconnected', (reason) => {
     log('WhatsApp disconnected:', reason);
