@@ -23,6 +23,7 @@ const {
   WEB_PORT = '8099',
   SELF_COMMAND_PREFIX = '',
   SELF_POLL_SECONDS = '4',
+  POLL_CHAT_IDS = '',
 } = process.env;
 
 const chromiumArgs = CHROMIUM_ARGS.split(',')
@@ -44,6 +45,7 @@ let ownId = null;
 const selfPrefix = SELF_COMMAND_PREFIX.trim().toLowerCase();
 const selfPollSeconds = Number.isFinite(parseInt(SELF_POLL_SECONDS, 10)) ? parseInt(SELF_POLL_SECONDS, 10) : 4;
 const processedIds = new Set();
+const pollChatIds = POLL_CHAT_IDS.split(',').map((s) => s.trim()).filter(Boolean);
 let lastPollTs = 0;
 let pollerStarted = false;
 
@@ -281,30 +283,47 @@ function handleSelfMessage(msg) {
 }
 
 // WhatsApp multi-device does not reliably fire events for messages sent from the linked
-// phone, so we also poll each chat's last message for owner commands (deduped by id).
+// phone, so we also poll for owner commands (deduped by id). We poll specific chats by id
+// (getChatById + fetchMessages) because whole-account getChats() is unreliable/broken in
+// current WhatsApp Web.
+async function pollOnce(client) {
+  const now = Math.floor(Date.now() / 1000);
+  const scan = (msgs) => {
+    for (const m of msgs || []) {
+      if (!m || !m.fromMe) continue;
+      if ((m.timestamp || 0) < lastPollTs) continue;
+      const body = (m.body || '').trim().toLowerCase();
+      if (!body.startsWith(selfPrefix)) continue;
+      publishIncoming(m, true);
+    }
+  };
+
+  if (pollChatIds.length) {
+    for (const id of pollChatIds) {
+      try {
+        const chat = await client.getChatById(id);
+        scan(await chat.fetchMessages({ limit: 10 }));
+      } catch { /* chat not found yet / transient — ignore */ }
+    }
+  } else {
+    // Best-effort fallback if no chat ids configured.
+    const chats = await client.getChats();
+    scan(chats.map((c) => c.lastMessage));
+  }
+  lastPollTs = now;
+}
+
 function startSelfPoller(client) {
   if (pollerStarted || !selfPrefix || !(selfPollSeconds > 0)) return;
   pollerStarted = true;
   lastPollTs = Math.floor(Date.now() / 1000);
-  setInterval(async () => {
+  setInterval(() => {
     if (!waReady) return;
-    try {
-      const chats = await client.getChats();
-      const now = Math.floor(Date.now() / 1000);
-      for (const chat of chats) {
-        const m = chat.lastMessage;
-        if (!m || !m.fromMe) continue;
-        if ((m.timestamp || 0) < lastPollTs) continue;
-        const body = (m.body || '').trim().toLowerCase();
-        if (!body.startsWith(selfPrefix)) continue;
-        publishIncoming(m, true);
-      }
-      lastPollTs = now;
-    } catch (err) {
-      log('Self-poll error:', err.message);
-    }
+    pollOnce(client).catch((err) => log('Self-poll error:', err.message));
   }, selfPollSeconds * 1000);
-  log(`Self-message polling every ${selfPollSeconds}s (prefix "${selfPrefix}")`);
+  log(
+    `Self-message polling every ${selfPollSeconds}s (prefix "${selfPrefix}", chats: ${pollChatIds.length ? pollChatIds.join(', ') : 'all'})`,
+  );
 }
 
 function buildClient() {
