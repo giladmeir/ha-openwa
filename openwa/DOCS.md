@@ -88,28 +88,46 @@ action:
 
 ## HTTP send API (connector / proxy for external services)
 
-Set `api_key` (a long random secret) and, optionally, `default_send_to` (your group chat id).
-The add-on then exposes an authenticated HTTP endpoint on port **8098** so any external
-service can relay a message into WhatsApp.
+Enable the connector by setting **either** `api_key` (a static shared secret) **or**
+`firebase_project_id` (verify Firebase ID tokens). The add-on then exposes an authenticated
+HTTP endpoint on port **8098** so any external service can relay a message into WhatsApp.
 
 - **Endpoint:** `POST http://<home-assistant-host>:8098/api/send`
-- **Auth:** header `Authorization: Bearer <api_key>` (or `X-API-Key: <api_key>`)
+- **Auth:** header `Authorization: Bearer <token>` (or `X-API-Key: <token>`), where `<token>` is
+  either a **Firebase ID token** of an authorized user, or the static `api_key`.
 - **Body (JSON):**
   - `message` — text to send (or use `image`)
   - `to` — optional chat id; falls back to `default_send_to`
   - `image` — optional URL or base64; `caption`, `filename`, `mimetype` optional
-- **Responses:** `200 {ok:true,chatId}`; `401` bad key; `400` bad body; `502` send failed.
+- **Responses:** `200 {ok:true,chatId}`; `401` bad/expired token; `400` bad body; `502` send failed.
 
-Example:
+### Firebase-authorized access (recommended)
+
+Restrict the connector to your **Firebase-authenticated personnel**:
+
+| Option | Description |
+| --- | --- |
+| `firebase_project_id` | Your Firebase project id. Incoming Bearer tokens are verified as Firebase ID tokens for this project. |
+| `firebase_allowed_emails` | Optional comma-separated allowlist of emails; only these verified users may send. Empty = any signed-in user in the project. |
+| `firebase_allowed_uids` | Optional comma-separated allowlist of Firebase UIDs. |
+
+Your external service (e.g. a web app or backend acting for a signed-in user) obtains the user's
+Firebase **ID token** and sends it as the Bearer token:
 
 ```bash
 curl -X POST http://homeassistant.local:8098/api/send \
-  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Authorization: Bearer <FIREBASE_ID_TOKEN>" \
   -H "Content-Type: application/json" \
   -d '{"message": "Deploy finished ✅"}'
 ```
 
-Send to a specific chat / an image:
+Verification only needs the project id (Google's public keys are fetched automatically); no
+service-account file is required.
+
+### Static key (optional, for machine-to-machine)
+
+If you also set `api_key`, that exact string is accepted as a Bearer token — handy for simple
+server-to-server calls that can't mint Firebase tokens:
 
 ```bash
 curl -X POST http://homeassistant.local:8098/api/send \
@@ -117,6 +135,5 @@ curl -X POST http://homeassistant.local:8098/api/send \
   -d '{"to": "15551234567", "image": "https://example.com/chart.png", "caption": "Daily report"}'
 ```
 
-> Exposed on the local network by default. For internet access, route port 8098 through
-> your existing Cloudflare Tunnel or Tailscale rather than opening a router port. Keep the
-> `api_key` secret and long; anyone with it can send messages as your linked account.
+> Exposed on the local network by default. For internet access, route port 8098 through your
+> existing Cloudflare Tunnel or Tailscale rather than opening a router port.

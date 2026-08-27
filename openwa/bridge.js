@@ -24,6 +24,9 @@ const {
   API_PORT = '8098',
   API_KEY = '',
   DEFAULT_SEND_TO = '',
+  FIREBASE_PROJECT_ID = '',
+  FIREBASE_ALLOWED_EMAILS = '',
+  FIREBASE_ALLOWED_UIDS = '',
   SELF_COMMAND_PREFIX = '',
   SELF_POLL_SECONDS = '4',
   POLL_CHAT_IDS = '',
@@ -40,6 +43,7 @@ const TOPIC = {
 };
 
 const log = (...args) => console.log(new Date().toISOString(), ...args);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let waClient = null;
 let waReady = false;
@@ -144,17 +148,47 @@ function startWebServer() {
 //   body: {"message": "...", "to": "<optional>", "image": "<optional url/base64>", "caption": "..."}
 //   "to" defaults to DEFAULT_SEND_TO when omitted.
 function startApiServer() {
-  if (!API_KEY) {
-    log('HTTP send API disabled (set api_key to enable).');
+  if (!API_KEY && !FIREBASE_PROJECT_ID) {
+    log('HTTP send API disabled (set api_key or firebase_project_id to enable).');
     return;
   }
   const port = parseInt(API_PORT, 10) || 8098;
 
-  const authorized = (req) => {
+  const allowedEmails = FIREBASE_ALLOWED_EMAILS.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+  const allowedUids = FIREBASE_ALLOWED_UIDS.split(',').map((s) => s.trim()).filter(Boolean);
+  let firebaseAuth = null;
+  if (FIREBASE_PROJECT_ID) {
+    try {
+      const admin = require('firebase-admin');
+      if (!admin.apps.length) admin.initializeApp({ projectId: FIREBASE_PROJECT_ID });
+      firebaseAuth = admin.auth();
+      log(`Firebase auth enabled for project ${FIREBASE_PROJECT_ID}` +
+        (allowedEmails.length ? ` (emails: ${allowedEmails.length})` : '') +
+        (allowedUids.length ? ` (uids: ${allowedUids.length})` : ''));
+    } catch (err) {
+      log('Firebase init failed:', err.message);
+    }
+  }
+
+  // Authorize by a Firebase ID token (verified against the project, optionally
+  // restricted to specific emails/uids) or, if configured, the static api_key.
+  const authorized = async (req) => {
     const auth = req.headers['authorization'] || '';
     const bearer = auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
-    const key = bearer || req.headers['x-api-key'] || '';
-    return key && key === API_KEY;
+    const token = bearer || req.headers['x-api-key'] || '';
+    if (!token) return false;
+    if (API_KEY && token === API_KEY) return true;
+    if (firebaseAuth) {
+      try {
+        const decoded = await firebaseAuth.verifyIdToken(token);
+        if (allowedEmails.length && !(decoded.email && allowedEmails.includes(decoded.email.toLowerCase()))) return false;
+        if (allowedUids.length && !allowedUids.includes(decoded.uid)) return false;
+        return true;
+      } catch {
+        return false;
+      }
+    }
+    return false;
   };
 
   http
@@ -166,7 +200,6 @@ function startApiServer() {
       };
       if (req.method === 'GET' && path === '/health') return json(200, { ok: true, status: ui.status });
       if (req.method !== 'POST' || path !== '/api/send') return json(404, { ok: false, error: 'not found' });
-      if (!authorized(req)) return json(401, { ok: false, error: 'unauthorized' });
 
       let body = '';
       let tooBig = false;
@@ -179,6 +212,7 @@ function startApiServer() {
       });
       req.on('end', async () => {
         if (tooBig) return json(413, { ok: false, error: 'payload too large' });
+        if (!(await authorized(req))) return json(401, { ok: false, error: 'unauthorized' });
         let data;
         try {
           data = JSON.parse(body || '{}');
@@ -457,22 +491,43 @@ function wireEvents(client) {
   if (selfPrefix) client.on('message_create', handleSelfMessage);
 }
 
+async function launchWhatsapp() {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      log(`Launching WhatsApp (whatsapp-web.js), attempt ${attempt}...`);
+      waClient = buildClient();
+      wireEvents(waClient);
+      await waClient.initialize();
+      return;
+    } catch (err) {
+      log(`WhatsApp init attempt ${attempt} failed:`, err.message);
+      try { if (waClient) await waClient.destroy(); } catch { /* ignore */ }
+      setUi({ status: 'reconnecting', qr: null });
+      publishStatus(false);
+      const delay = Math.min(60000, 5000 * attempt);
+      await sleep(delay);
+    }
+  }
+}
+
 async function main() {
   if (!MQTT_HOST) {
     log('Fatal: MQTT_HOST not set');
     process.exit(1);
   }
+  // Keep the process alive on unexpected errors so MQTT + the HTTP API stay up
+  // and WhatsApp can retry, instead of the whole add-on crash-looping.
+  process.on('unhandledRejection', (err) => log('unhandledRejection:', err && err.message ? err.message : err));
+  process.on('uncaughtException', (err) => log('uncaughtException:', err && err.message ? err.message : err));
+
   startWebServer();
   startApiServer();
   mqttClient = connectMqtt();
 
-  log('Launching WhatsApp (whatsapp-web.js)...');
-  waClient = buildClient();
-  wireEvents(waClient);
-  await waClient.initialize();
+  await launchWhatsapp();
 }
 
 main().catch((err) => {
-  console.error('Fatal error:', err);
+  console.error('Fatal error in main:', err);
   process.exit(1);
 });

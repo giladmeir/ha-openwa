@@ -1,12 +1,13 @@
 {
   "name": "ha-openwa-bridge",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "private": true,
   "description": "Home Assistant <-> WhatsApp bridge over MQTT using whatsapp-web.js",
   "main": "bridge.js",
   "dependencies": {
     "whatsapp-web.js": "1.34.7",
     "qrcode": "^1.5.4",
-    "mqtt": "^5.15.2"
+    "mqtt": "^5.15.2",
+    "firebase-admin": "13.10.0"
   }
 }
