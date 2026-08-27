@@ -243,19 +243,22 @@ async function handleSendRequest(payload) {
 
 // WhatsApp -> HA. Shared publisher for both received and (opt-in) self-sent messages.
 // Deduplicates by message id so the event and polling paths never double-publish.
-function publishIncoming(msg, fromMe) {
+// chatIdOverride is the real chat id (e.g. the group @g.us) when polling, because a
+// polled message's own `from`/`to` may be a privacy-masked @lid id.
+function publishIncoming(msg, fromMe, chatIdOverride) {
   const id = msg.id && msg.id._serialized;
   if (id) {
     if (processedIds.has(id)) return;
     processedIds.add(id);
     if (processedIds.size > 1000) processedIds.clear();
   }
-  const isGroup = typeof msg.from === 'string' && msg.from.endsWith('@g.us');
+  const chatId = chatIdOverride || msg.from;
+  const isGroup = typeof chatId === 'string' && chatId.endsWith('@g.us');
   const author = fromMe ? ownId || msg.to : msg.author || null;
   const out = {
     from: msg.from,
     to: msg.to,
-    chatId: msg.from,
+    chatId,
     sender: (msg._data && msg._data.notifyName) || author || msg.from,
     author,
     body: msg.body || '',
@@ -302,7 +305,14 @@ async function pollOnce(client) {
     for (const id of pollChatIds) {
       try {
         const chat = await client.getChatById(id);
-        scan(await chat.fetchMessages({ limit: 10 }));
+        const msgs = await chat.fetchMessages({ limit: 10 });
+        for (const m of msgs || []) {
+          if (!m || !m.fromMe) continue;
+          if ((m.timestamp || 0) < lastPollTs) continue;
+          const body = (m.body || '').trim().toLowerCase();
+          if (!body.startsWith(selfPrefix)) continue;
+          publishIncoming(m, true, id);
+        }
       } catch { /* chat not found yet / transient — ignore */ }
     }
   } else {
