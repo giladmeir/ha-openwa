@@ -1,5 +1,5 @@
 name: WhatsApp Bridge
-version: "0.5.2"
+version: "0.6.0"
 slug: openwa
 description: Connect Home Assistant to WhatsApp via whatsapp-web.js, bridged over MQTT (send + receive)
 url: https://github.com/giladmeir/ha-openwa/tree/main/openwa
@@ -18,8 +18,10 @@ services:
   - mqtt:need
 ports:
   8099/tcp: null
+  8098/tcp: 8098
 ports_description:
   8099/tcp: Web UI + health endpoint (QR scanning, add-on watchdog)
+  8098/tcp: HTTP send API for external services (requires api_key)
 options:
   session_id: ha
   base_topic: openwa
@@ -30,6 +32,8 @@ options:
   self_command_prefix: ""
   self_poll_seconds: 4
   poll_chat_ids: ""
+  api_key: ""
+  default_send_to: ""
   protocol_timeout: 120000
   create_retries: 3
   log_level: info
@@ -43,6 +47,8 @@ schema:
   self_command_prefix: str?
   self_poll_seconds: int(0,60)
   poll_chat_ids: str?
+  api_key: str?
+  default_send_to: str?
   protocol_timeout: int(30000,600000)
   create_retries: int(0,10)
   log_level: list(trace|debug|info|notice|warning|error|fatal)

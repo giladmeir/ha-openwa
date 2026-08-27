@@ -21,6 +21,9 @@ const {
   WEB_VERSION = '',
   PROTOCOL_TIMEOUT = '120000',
   WEB_PORT = '8099',
+  API_PORT = '8098',
+  API_KEY = '',
+  DEFAULT_SEND_TO = '',
   SELF_COMMAND_PREFIX = '',
   SELF_POLL_SECONDS = '4',
   POLL_CHAT_IDS = '',
@@ -136,6 +139,62 @@ function startWebServer() {
     .listen(port, () => log(`Web UI + health listening on :${port}`));
 }
 
+// Authenticated HTTP connector so external services can relay messages to WhatsApp.
+// POST /api/send  with  Authorization: Bearer <API_KEY>  (or header X-API-Key)
+//   body: {"message": "...", "to": "<optional>", "image": "<optional url/base64>", "caption": "..."}
+//   "to" defaults to DEFAULT_SEND_TO when omitted.
+function startApiServer() {
+  if (!API_KEY) {
+    log('HTTP send API disabled (set api_key to enable).');
+    return;
+  }
+  const port = parseInt(API_PORT, 10) || 8098;
+
+  const authorized = (req) => {
+    const auth = req.headers['authorization'] || '';
+    const bearer = auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
+    const key = bearer || req.headers['x-api-key'] || '';
+    return key && key === API_KEY;
+  };
+
+  http
+    .createServer((req, res) => {
+      const path = (req.url || '/').split('?')[0];
+      const json = (code, obj) => {
+        res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify(obj));
+      };
+      if (req.method === 'GET' && path === '/health') return json(200, { ok: true, status: ui.status });
+      if (req.method !== 'POST' || path !== '/api/send') return json(404, { ok: false, error: 'not found' });
+      if (!authorized(req)) return json(401, { ok: false, error: 'unauthorized' });
+
+      let body = '';
+      let tooBig = false;
+      req.on('data', (chunk) => {
+        body += chunk;
+        if (body.length > 5 * 1024 * 1024) {
+          tooBig = true;
+          req.destroy();
+        }
+      });
+      req.on('end', async () => {
+        if (tooBig) return json(413, { ok: false, error: 'payload too large' });
+        let data;
+        try {
+          data = JSON.parse(body || '{}');
+        } catch {
+          return json(400, { ok: false, error: 'invalid JSON' });
+        }
+        if (!data.to) data.to = DEFAULT_SEND_TO;
+        if (!data.to) return json(400, { ok: false, error: 'missing "to" and no default_send_to configured' });
+        if (!data.message && !data.image) return json(400, { ok: false, error: 'missing "message" or "image"' });
+        const result = await sendWhatsapp(data);
+        return json(result.ok ? 200 : 502, result);
+      });
+    })
+    .listen(port, () => log(`HTTP send API listening on :${port} (Bearer auth)`));
+}
+
 // --- MQTT ---
 function connectMqtt() {
   const proto = MQTT_SSL === 'true' ? 'mqtts' : 'mqtt';
@@ -215,17 +274,12 @@ function toChatId(to) {
   return digits ? `${digits}@c.us` : null;
 }
 
-// HA -> WhatsApp. Payload: {"to": "...", "message": "..."} or {"to","image","caption","filename"}.
-async function handleSendRequest(payload) {
-  if (!waClient || !waReady) return log('Send dropped: WhatsApp not ready yet');
-  let data;
-  try {
-    data = JSON.parse(payload.toString());
-  } catch {
-    return log('Send dropped: payload is not valid JSON');
-  }
+// Core send. data: {to, message} or {to, image, caption, filename, mimetype}.
+// Returns { ok, error, chatId }.
+async function sendWhatsapp(data) {
+  if (!waClient || !waReady) return { ok: false, error: 'WhatsApp not ready' };
   const chatId = toChatId(data.to);
-  if (!chatId) return log('Send dropped: missing/invalid "to"');
+  if (!chatId) return { ok: false, error: 'missing/invalid "to"' };
   try {
     if (data.image) {
       const media = /^https?:\/\//i.test(data.image)
@@ -236,9 +290,23 @@ async function handleSendRequest(payload) {
       await waClient.sendMessage(chatId, String(data.message ?? ''));
     }
     log('Sent message to', chatId);
+    return { ok: true, chatId };
   } catch (err) {
     log('Send failed:', err.message);
+    return { ok: false, error: err.message, chatId };
   }
+}
+
+// HA -> WhatsApp over MQTT. Payload: {"to": "...", "message": "..."} or {"to","image",...}.
+async function handleSendRequest(payload) {
+  let data;
+  try {
+    data = JSON.parse(payload.toString());
+  } catch {
+    return log('Send dropped: payload is not valid JSON');
+  }
+  const res = await sendWhatsapp(data);
+  if (!res.ok) log('Send dropped:', res.error);
 }
 
 // WhatsApp -> HA. Shared publisher for both received and (opt-in) self-sent messages.
@@ -395,6 +463,7 @@ async function main() {
     process.exit(1);
   }
   startWebServer();
+  startApiServer();
   mqttClient = connectMqtt();
 
   log('Launching WhatsApp (whatsapp-web.js)...');

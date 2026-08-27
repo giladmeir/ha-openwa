@@ -26,6 +26,8 @@ incoming messages as triggers.
 | `self_command_prefix` | `""` | If set, messages **sent by the linked account** (e.g. the owner typing in a family group, or "message yourself") that start with this word are also forwarded to HA. Enables controlling HA from the same phone. Empty = only forward messages received from others. |
 | `self_poll_seconds` | `4` | How often (seconds) to poll for owner-sent commands, since WhatsApp multi-device doesn't reliably emit events for messages sent from the linked phone. `0` disables polling. Only used when `self_command_prefix` is set. |
 | `poll_chat_ids` | `""` | Comma-separated chat ids to poll for owner commands (e.g. the family group `1203...@g.us` and/or your self-chat `<number>@c.us`). Recommended — whole-account scanning is unreliable in current WhatsApp Web. Empty = best-effort scan of all chats. |
+| `api_key` | `""` | Enables the HTTP send API (see below) when set. External services must send this as a Bearer token. Empty = API disabled. |
+| `default_send_to` | `""` | Default chat id the HTTP API sends to when a request omits `to` (e.g. your group `1203...@g.us`). |
 | `protocol_timeout` | `120000` | Puppeteer CDP timeout (ms). Raise if Chromium is slow to respond and you see `Network.enable timed out`. |
 | `create_retries` | `3` | Reserved for launch retries. |
 | `log_level` | `info` | Add-on log level. |
@@ -83,3 +85,38 @@ action:
 ```
 
 `trigger.payload_json` fields: `from`, `chatId`, `sender`, `body`, `type`, `isGroup`, `timestamp`, `id`.
+
+## HTTP send API (connector / proxy for external services)
+
+Set `api_key` (a long random secret) and, optionally, `default_send_to` (your group chat id).
+The add-on then exposes an authenticated HTTP endpoint on port **8098** so any external
+service can relay a message into WhatsApp.
+
+- **Endpoint:** `POST http://<home-assistant-host>:8098/api/send`
+- **Auth:** header `Authorization: Bearer <api_key>` (or `X-API-Key: <api_key>`)
+- **Body (JSON):**
+  - `message` — text to send (or use `image`)
+  - `to` — optional chat id; falls back to `default_send_to`
+  - `image` — optional URL or base64; `caption`, `filename`, `mimetype` optional
+- **Responses:** `200 {ok:true,chatId}`; `401` bad key; `400` bad body; `502` send failed.
+
+Example:
+
+```bash
+curl -X POST http://homeassistant.local:8098/api/send \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Deploy finished ✅"}'
+```
+
+Send to a specific chat / an image:
+
+```bash
+curl -X POST http://homeassistant.local:8098/api/send \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -d '{"to": "15551234567", "image": "https://example.com/chart.png", "caption": "Daily report"}'
+```
+
+> Exposed on the local network by default. For internet access, route port 8098 through
+> your existing Cloudflare Tunnel or Tailscale rather than opening a router port. Keep the
+> `api_key` secret and long; anyone with it can send messages as your linked account.
